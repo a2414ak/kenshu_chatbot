@@ -86,24 +86,39 @@
   let mode = "chat";
 
   function setMode(nextMode) {
-    mode = nextMode;
+  mode = nextMode;
 
-    const isChat = mode === "chat";
-    tabChat.setAttribute("aria-selected", isChat ? "true" : "false");
-    tabRag.setAttribute("aria-selected",  isChat ? "false" : "true");
-    modeBadge.textContent = isChat ? "対話モード" : "RAGモード";
+  const isChat = mode === "chat";
+  tabChat.setAttribute("aria-selected", isChat ? "true" : "false");
+  tabRag.setAttribute("aria-selected",  isChat ? "false" : "true");
+  modeBadge.textContent = isChat ? "対話モード" : "RAGモード";
 
-    // 必要ならここでヒント表示など
-    hintEl.textContent = isChat
-      ? ""
-      : "RAGモード：社内ナレッジ（検索）を優先して回答します。";
-    msgEl.focus();
-  }
+  hintEl.textContent = isChat
+    ? ""
+    : "RAGモード：社内ナレッジ（検索）を優先して回答します。";
+
+  resetConversation();
+  boot();
+
+  msgEl.focus();
+}
+
 
   tabChat.addEventListener("click", () => setMode("chat"));
   tabRag.addEventListener("click",  () => setMode("rag"));
 
-  const history = [];
+let history = [];
+let convoToken = 0; // ★タブ切替などで会話が切り替わったことを示すトークン
+
+function resetConversation() {
+  convoToken++;
+  chatEl.innerHTML = "";
+  history.length = 0;
+  msgEl.value = "";
+  sendBtn.disabled = false;
+  hintEl.textContent = "";
+}
+
 
   function add(role, text) {
     const row = document.createElement("div");
@@ -118,70 +133,82 @@
 
   // ★初回表示：GASの init() から初回メッセージを取得して表示
   function boot() {
-    hintEl.textContent = "";
-    sendBtn.disabled = true;
+  const myToken = convoToken;
 
-    google.script.run
-      .withSuccessHandler((data) => {
-        if (data && data.answer) {
-          add("assistant", data.answer);
-          history.push({ role: "assistant", content: data.answer });
-        } else {
-          add("assistant", (data && data.error) ? data.error : "初期化に失敗しました");
-          hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
-        }
-        sendBtn.disabled = false;
-        msgEl.focus();
-      })
-      .withFailureHandler((err) => {
-        add("assistant", "サーバー側エラー: " + (err && err.message ? err.message : err));
+  hintEl.textContent = "";
+  sendBtn.disabled = true;
+
+  google.script.run
+    .withSuccessHandler((data) => {
+      if (myToken !== convoToken) return;
+
+      if (data && data.answer) {
+        add("assistant", data.answer);
+        history.push({ role: "assistant", content: data.answer });
+      } else {
+        add("assistant", (data && data.error) ? data.error : "初期化に失敗しました");
         hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
-        sendBtn.disabled = false;
-        msgEl.focus();
-      })
-      .init();
-  }
+      }
+      sendBtn.disabled = false;
+      msgEl.focus();
+    })
+    .withFailureHandler((err) => {
+      if (myToken !== convoToken) return;
+
+      add("assistant", "サーバー側エラー: " + (err && err.message ? err.message : err));
+      hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
+      sendBtn.disabled = false;
+      msgEl.focus();
+    })
+    .init(mode);
+}
+
+
 
   boot();
 
   function send() {
-    const message = msgEl.value.trim();
-    if (!message) return;
+  const message = msgEl.value.trim();
+  if (!message) return;
 
-    msgEl.value = "";
-    // RAGタブの時に出しているヒントは残したいなら消さない。必要なら↓を外す。
-    // hintEl.textContent = "";
+  const myToken = convoToken; // ★この送信が属する会話トークンを固定
+  const myMode = mode;        // ★この送信時のモードも固定（念のため）
 
-    add("user", message);
-    history.push({ role: "user", content: message });
+  msgEl.value = "";
+  add("user", message);
+  history.push({ role: "user", content: message });
 
-    sendBtn.disabled = true;
+  sendBtn.disabled = true;
 
-    google.script.run
-      .withSuccessHandler((data) => {
-        if (data && data.answer) {
-          add("assistant", data.answer);
-          history.push({ role: "assistant", content: data.answer });
-        } else {
-          add("assistant", (data && data.error) ? data.error : "エラーが発生しました");
-          hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
-        }
-        sendBtn.disabled = false;
-        msgEl.focus();
-      })
-      .withFailureHandler((err) => {
-        add("assistant", "サーバー側エラー: " + (err && err.message ? err.message : err));
-        hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
-        sendBtn.disabled = false;
-        msgEl.focus();
-      });
-      
-      if (mode === "rag") {
-        runner.chat_rag(message, history);
+  const runner = google.script.run
+    .withSuccessHandler((data) => {
+      // ★タブ切替後に返ってきた古い応答は捨てる
+      if (myToken !== convoToken || myMode !== mode) return;
+
+      if (data && data.answer) {
+        add("assistant", data.answer);
+        history.push({ role: "assistant", content: data.answer });
       } else {
-        runner.chat(message, history);
+        add("assistant", (data && data.error) ? data.error : "エラーが発生しました");
+        hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
       }
-  }
+      sendBtn.disabled = false;
+      msgEl.focus();
+    })
+    .withFailureHandler((err) => {
+      if (myToken !== convoToken || myMode !== mode) return;
+
+      add("assistant", "サーバー側エラー: " + (err && err.message ? err.message : err));
+      hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
+      sendBtn.disabled = false;
+      msgEl.focus();
+    });
+
+  if (mode === "rag") runner.chat_rag(message, history);
+  else runner.chat(message, history);
+}
+
+
 
   sendBtn.addEventListener("click", send);
   msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
