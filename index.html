@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sheet Chatbot</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background:#f6f7f9; }
+    .wrap { max-width: 860px; margin: 24px auto; background:#fff; border-radius: 14px; padding: 16px; }
+
+    /* ★ tabs */
+    .tabs { display:flex; gap:8px; margin: 10px 0 14px; }
+    .tab {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid #ddd;
+      background: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      user-select: none;
+    }
+    .tab[aria-selected="true"]{
+      border-color: #3b82f6;
+      background: #eff6ff;
+      font-weight: 700;
+    }
+    .mode-badge{
+      display:inline-block;
+      margin-left: 8px;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #eee;
+      background:#fafafa;
+      color:#555;
+      vertical-align: middle;
+    }
+
+    .box { border: 1px solid #ddd; border-radius: 12px; padding: 12px; height: 60vh; overflow: auto; background:#fafafa; }
+    .row { margin: 10px 0; display: flex; }
+    .me { justify-content: flex-end; }
+    .bubble { max-width: 80%; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; line-height: 1.4; }
+    .user { background: #dff3ff; }
+    .bot  { background: #fff; border: 1px solid #eee; }
+    .bar { display: flex; gap: 8px; margin-top: 12px; }
+    input { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .hint { color:#666; font-size:12px; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>
+      Sheet Chatbot
+      <span id="modeBadge" class="mode-badge">対話モード</span>
+    </h2>
+
+    <!-- ★ 追加：タブ -->
+    <div class="tabs" role="tablist" aria-label="mode tabs">
+      <button class="tab" id="tabChat" type="button" role="tab" aria-selected="true" data-mode="chat">対話モード</button>
+      <button class="tab" id="tabRag"  type="button" role="tab" aria-selected="false" data-mode="rag">RAGモード</button>
+    </div>
+
+    <div id="chat" class="box"></div>
+
+    <div class="bar">
+      <input id="msg" placeholder="質問を入力…" />
+      <button id="send">送信</button>
+    </div>
+    <div id="hint" class="hint"></div>
+  </div>
+
+<script>
+  const chatEl = document.getElementById("chat");
+  const msgEl = document.getElementById("msg");
+  const sendBtn = document.getElementById("send");
+  const hintEl = document.getElementById("hint");
+
+  // ★ tabs
+  const tabChat = document.getElementById("tabChat");
+  const tabRag  = document.getElementById("tabRag");
+  const modeBadge = document.getElementById("modeBadge");
+
+  // mode: "chat" | "rag"
+  let mode = "chat";
+
+  function setMode(nextMode) {
+    mode = nextMode;
+
+    const isChat = mode === "chat";
+    tabChat.setAttribute("aria-selected", isChat ? "true" : "false");
+    tabRag.setAttribute("aria-selected",  isChat ? "false" : "true");
+    modeBadge.textContent = isChat ? "対話モード" : "RAGモード";
+
+    // 必要ならここでヒント表示など
+    hintEl.textContent = isChat
+      ? ""
+      : "RAGモード：社内ナレッジ（検索）を優先して回答します。";
+    msgEl.focus();
+  }
+
+  tabChat.addEventListener("click", () => setMode("chat"));
+  tabRag.addEventListener("click",  () => setMode("rag"));
+
+  const history = [];
+
+  function add(role, text) {
+    const row = document.createElement("div");
+    row.className = "row" + (role === "user" ? " me" : "");
+    const b = document.createElement("div");
+    b.className = "bubble " + (role === "user" ? "user" : "bot");
+    b.textContent = text;
+    row.appendChild(b);
+    chatEl.appendChild(row);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  // ★初回表示：GASの init() から初回メッセージを取得して表示
+  function boot() {
+    hintEl.textContent = "";
+    sendBtn.disabled = true;
+
+    google.script.run
+      .withSuccessHandler((data) => {
+        if (data && data.answer) {
+          add("assistant", data.answer);
+          history.push({ role: "assistant", content: data.answer });
+        } else {
+          add("assistant", (data && data.error) ? data.error : "初期化に失敗しました");
+          hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
+        }
+        sendBtn.disabled = false;
+        msgEl.focus();
+      })
+      .withFailureHandler((err) => {
+        add("assistant", "サーバー側エラー: " + (err && err.message ? err.message : err));
+        hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
+        sendBtn.disabled = false;
+        msgEl.focus();
+      })
+      .init();
+  }
+
+  boot();
+
+  function send() {
+    const message = msgEl.value.trim();
+    if (!message) return;
+
+    msgEl.value = "";
+    // RAGタブの時に出しているヒントは残したいなら消さない。必要なら↓を外す。
+    // hintEl.textContent = "";
+
+    add("user", message);
+    history.push({ role: "user", content: message });
+
+    sendBtn.disabled = true;
+
+    google.script.run
+      .withSuccessHandler((data) => {
+        if (data && data.answer) {
+          add("assistant", data.answer);
+          history.push({ role: "assistant", content: data.answer });
+        } else {
+          add("assistant", (data && data.error) ? data.error : "エラーが発生しました");
+          hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
+        }
+        sendBtn.disabled = false;
+        msgEl.focus();
+      })
+      .withFailureHandler((err) => {
+        add("assistant", "サーバー側エラー: " + (err && err.message ? err.message : err));
+        hintEl.textContent = "初回はGASエディタで authorize() を1回実行して権限を許可してください。";
+        sendBtn.disabled = false;
+        msgEl.focus();
+      });
+      
+      if (mode === "rag") {
+        runner.chat_rag(message, history);
+      } else {
+        runner.chat(message, history);
+      }
+  }
+
+  sendBtn.addEventListener("click", send);
+  msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+</script>
+
+</body>
+</html>
